@@ -18,7 +18,7 @@
  *   contributors may be used to endorse or promote products derived from
  *   this software without specific prior written permission.
  *
- * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS"
+ * THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS 'AS IS'
  * AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE
  * IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
  * DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT HOLDER OR CONTRIBUTORS BE LIABLE
@@ -37,7 +37,9 @@ const spawn = require('child_process').spawn;
 const defaultFPS = 60;
 
 const makeFileDirectoryIfNeeded = function (filepath) {
-  var dir = path.parse(filepath).dir, ind, currDir;
+  var dir = path.parse(filepath).dir,
+    ind,
+    currDir;
   var directories = dir.split(path.sep);
   for (ind = 1; ind <= directories.length; ind++) {
     currDir = directories.slice(0, ind).join(path.sep);
@@ -56,19 +58,25 @@ const deleteFolder = function (dir) {
 
 const argumentArrayContains = function (args, item) {
   return args.reduce(function (accumulator, currentValue) {
-    return accumulator ||
-      (currentValue === item) ||
-      currentValue.startsWith(item + '=');
+    return (
+      accumulator ||
+      currentValue === item ||
+      currentValue.startsWith(item + '=')
+    );
   }, false);
 };
 
 module.exports = async function (config) {
-  config = Object.assign({
-    roundToEvenWidth: true,
-    roundToEvenHeight: true,
-    url: 'index.html',
-    pixFmt: 'yuv420p'
-  }, config || {});
+  config = Object.assign(
+    {
+      roundToEvenWidth: true,
+      roundToEvenHeight: true,
+      url: 'index.html',
+      pixFmt: 'yuv420p',
+      quiet: true,
+    },
+    config || {}
+  );
   var output = path.resolve(process.cwd(), config.output || 'video.mp4');
   var ffmpegArgs;
   var inputOptions = config.inputOptions || [];
@@ -81,11 +89,16 @@ module.exports = async function (config) {
   var outputPattern;
   var convertProcess, processPromise;
   var extension;
-  var screenshotType = (config.screenshotType || 'png');
+  var screenshotType = config.screenshotType || 'png';
+
   if (frameMode) {
     if (!frameDirectory) {
-      frameDirectory = 'timecut-' + (config.keepFrames ? 'frames-' : 'temp-') + (new Date()).getTime();
+      frameDirectory =
+        'timecut-' +
+        (config.keepFrames ? 'frames-' : 'temp-') +
+        new Date().getTime();
     }
+
     if (typeof config.frameCache === 'string') {
       frameDirectory = path.join(config.frameCache, frameDirectory);
     }
@@ -97,7 +110,7 @@ module.exports = async function (config) {
   }
   var timesnapConfig = Object.assign({}, config, {
     output: '',
-    outputPattern: outputPattern
+    outputPattern: outputPattern,
   });
 
   if (config.fps) {
@@ -108,6 +121,7 @@ module.exports = async function (config) {
     fps = defaultFPS;
   }
 
+  const totalFrames = config.fps * config.duration;
   const log = function () {
     if (!config.quiet) {
       // eslint-disable-next-line no-console
@@ -117,39 +131,42 @@ module.exports = async function (config) {
 
   var makeProcessPromise = function () {
     makeFileDirectoryIfNeeded(output);
-    var input;
-    if (pipeMode) {
-      input = 'pipe:0';
-    } else {
-      input = outputPattern;
-    }
+    var input = pipeMode ? 'pipe:0' : outputPattern;
     ffmpegArgs = inputOptions;
-    if (!argumentArrayContains(inputOptions, '-framerate')) {
+
+    if (!argumentArrayContains(inputOptions, '-framerate'))
       ffmpegArgs = ffmpegArgs.concat(['-framerate', fps]);
-    }
 
     if (pipeMode && (screenshotType === 'jpeg' || screenshotType === 'jpg')) {
       // piping jpegs with the other method can cause an error
       // this is intended to fix that
-      ffmpegArgs = ffmpegArgs.concat(['-f', 'image2pipe', '-vcodec', 'mjpeg', '-i', '-']);
+      ffmpegArgs = ffmpegArgs.concat([
+        '-f',
+        'image2pipe',
+        '-vcodec',
+        'mjpeg',
+        '-i',
+        '-',
+      ]);
     } else {
       ffmpegArgs = ffmpegArgs.concat(['-i', input]);
     }
 
-    if (!argumentArrayContains(outputOptions, '-pix_fmt') && config.pixFmt) {
+    if (!argumentArrayContains(outputOptions, '-pix_fmt') && config.pixFmt)
       ffmpegArgs = ffmpegArgs.concat(['-pix_fmt', config.pixFmt]);
-    }
+
     ffmpegArgs = ffmpegArgs.concat(outputOptions);
     if (config.outputStream) {
       let outputStreamOptions = config.outputStreamOptions || {};
       let outputStreamArgs = ['-f', outputStreamOptions.format || 'mp4'];
       let movflags = outputStreamOptions.movflags;
-      if (movflags === undefined) {
+
+      if (movflags === undefined)
         movflags = 'frag_keyframe+empty_moov+faststart';
-      }
-      if (movflags) {
+
+      if (movflags)
         outputStreamArgs = outputStreamArgs.concat(['-movflags', movflags]);
-      }
+
       ffmpegArgs = ffmpegArgs.concat(outputStreamArgs).concat(['pipe:1']);
     } else {
       // by default just write out the file
@@ -157,14 +174,40 @@ module.exports = async function (config) {
       ffmpegArgs = ffmpegArgs.concat(['-y', output]);
     }
 
+    const parseProgressLine = (data) => {
+      const dataString = data.toString();
+      const line = dataString.replace(/=\s+/g, '=').trim();
+      const progressParts = line.split(' ');
+
+      if (dataString.includes('frame=')) {
+        for (var i = 0; i < progressParts.length; i++) {
+          const progressSplit = progressParts[i].split('=', 2);
+          const key = progressSplit[0];
+          const value = progressSplit[1];
+
+          if (typeof value !== 'undefined') {
+            if (key === 'frame') {
+              console.log(
+                `Compiling current:${value} total:${totalFrames} frames`
+              );
+            }
+          }
+        }
+      }
+    };
+
     convertProcess = spawn('ffmpeg', ffmpegArgs);
     convertProcess.stderr.setEncoding('utf8');
     convertProcess.stderr.on('data', function (data) {
-      log(data);
+      parseProgressLine(data);
     });
+
     return new Promise(function (resolve, reject) {
       convertProcess.on('close', function () {
-        resolve();
+        console.log('FFMPEG compilation process has been completed');
+        // Check if file has been created
+        if (fs.existsSync(config.output)) resolve(config.output);
+        else reject(new Error('File not created'));
       });
       convertProcess.on('error', function (err) {
         processError = err;
@@ -187,32 +230,22 @@ module.exports = async function (config) {
   if (pipeMode) {
     processPromise = makeProcessPromise();
     timesnapConfig.frameProcessor = function (buffer) {
-      if (processError) {
-        throw processError;
-      }
+      if (processError) throw processError;
       convertProcess.stdin.write(buffer);
     };
   }
 
-  var overallError;
+  let videoOutput;
   try {
     await timesnap(timesnapConfig);
-    if (convertProcess) {
-      convertProcess.stdin.end();
-    }
-    if (processPromise) {
-      await processPromise;
-    } else {
-      await makeProcessPromise();
-    }
-  } catch (err) {
-    overallError = err;
-    log(err);
-  }
-  if (frameMode && !config.keepFrames) {
-    deleteFolder(frameDirectory);
-  }
-  if (overallError) {
-    throw overallError;
+    if (convertProcess) convertProcess.stdin.end();
+    videoOutput = processPromise
+      ? await processPromise
+      : await makeProcessPromise();
+    if (frameMode && !config.keepFrames) deleteFolder(frameDirectory);
+
+    return videoOutput;
+  } catch (error) {
+    throw error;
   }
 };
