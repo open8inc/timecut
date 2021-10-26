@@ -34,37 +34,12 @@ const timesnap = require('timesnap');
 const path = require('path');
 const fs = require('fs');
 const spawn = require('child_process').spawn;
-const defaultFPS = 60;
-
-const makeFileDirectoryIfNeeded = function (filepath) {
-  var dir = path.parse(filepath).dir,
-    ind,
-    currDir;
-  var directories = dir.split(path.sep);
-  for (ind = 1; ind <= directories.length; ind++) {
-    currDir = directories.slice(0, ind).join(path.sep);
-    if (currDir && !fs.existsSync(currDir)) {
-      fs.mkdirSync(currDir);
-    }
-  }
-};
-
-const deleteFolder = function (dir) {
-  fs.readdirSync(dir).forEach(function (file) {
-    fs.unlinkSync(path.join(dir, file));
-  });
-  fs.rmdirSync(dir);
-};
-
-const argumentArrayContains = function (args, item) {
-  return args.reduce(function (accumulator, currentValue) {
-    return (
-      accumulator ||
-      currentValue === item ||
-      currentValue.startsWith(item + '=')
-    );
-  }, false);
-};
+const {
+  makeFileDirectoryIfNeeded,
+  deleteFolder,
+  argumentArrayContains,
+  parseProgressLine,
+} = require('./helpers');
 
 module.exports = async function (config) {
   config = Object.assign(
@@ -77,19 +52,16 @@ module.exports = async function (config) {
     },
     config || {}
   );
-  var output = path.resolve(process.cwd(), config.output || 'video.mp4');
-  var ffmpegArgs;
-  var inputOptions = config.inputOptions || [];
-  var outputOptions = config.outputOptions || [];
-  var frameDirectory = config.tempDir || config.frameDir;
-  var fps;
-  var frameMode = config.frameCache || !config.pipeMode;
-  var pipeMode = config.pipeMode;
-  var processError;
-  var outputPattern;
-  var convertProcess, processPromise;
-  var extension;
-  var screenshotType = config.screenshotType || 'png';
+
+  const output = path.resolve(process.cwd(), config.output || 'video.mp4');
+  const frameMode = config.frameCache || !config.pipeMode;
+  const pipeMode = config.pipeMode;
+  const screenshotType = config.screenshotType || 'png';
+  let ffmpegArgs;
+  let inputOptions = config.inputOptions || [];
+  let outputOptions = config.outputOptions || [];
+  let frameDirectory = config.tempDir || config.frameDir;
+  let processError, outputPattern, convertProcess, processPromise;
 
   if (frameMode) {
     if (!frameDirectory) {
@@ -99,43 +71,37 @@ module.exports = async function (config) {
         new Date().getTime();
     }
 
-    if (typeof config.frameCache === 'string') {
+    if (typeof config.frameCache === 'string')
       frameDirectory = path.join(config.frameCache, frameDirectory);
-    }
+
     frameDirectory = path.resolve(path.parse(output).dir, frameDirectory);
-    extension = '.' + screenshotType;
-    outputPattern = path.resolve(frameDirectory, 'image-%09d' + extension);
+    outputPattern = path.resolve(
+      frameDirectory,
+      `image-%09d.${screenshotType}`
+    );
   } else {
     outputPattern = '';
   }
-  var timesnapConfig = Object.assign({}, config, {
+
+  const timesnapConfig = Object.assign({}, config, {
     output: '',
     outputPattern: outputPattern,
   });
 
-  if (config.fps) {
-    fps = config.fps;
-  } else if (config.frames && config.duration) {
-    fps = config.frames / config.duration;
-  } else {
-    fps = defaultFPS;
-  }
-
-  const totalFrames = config.fps * config.duration;
-  const log = function () {
-    if (!config.quiet) {
-      // eslint-disable-next-line no-console
-      console.log.apply(this, arguments);
-    }
+  const fps = () => {
+    if (config.fps) return config.fps;
+    if (config.frames && config.duration)
+      return config.frames / config.duration;
+    return 60;
   };
 
-  var makeProcessPromise = function () {
+  const makeProcessPromise = function () {
     makeFileDirectoryIfNeeded(output);
-    var input = pipeMode ? 'pipe:0' : outputPattern;
+    const input = pipeMode ? 'pipe:0' : outputPattern;
     ffmpegArgs = inputOptions;
 
     if (!argumentArrayContains(inputOptions, '-framerate'))
-      ffmpegArgs = ffmpegArgs.concat(['-framerate', fps]);
+      ffmpegArgs = ffmpegArgs.concat(['-framerate', fps()]);
 
     if (pipeMode && (screenshotType === 'jpeg' || screenshotType === 'jpg')) {
       // piping jpegs with the other method can cause an error
@@ -174,49 +140,31 @@ module.exports = async function (config) {
       ffmpegArgs = ffmpegArgs.concat(['-y', output]);
     }
 
-    const parseProgressLine = (data) => {
-      const dataString = data.toString();
-      const line = dataString.replace(/=\s+/g, '=').trim();
-      const progressParts = line.split(' ');
-
-      if (dataString.includes('frame=')) {
-        for (var i = 0; i < progressParts.length; i++) {
-          const progressSplit = progressParts[i].split('=', 2);
-          const key = progressSplit[0];
-          const value = progressSplit[1];
-
-          if (typeof value !== 'undefined') {
-            if (key === 'frame') {
-              console.log(
-                `Compiling current:${value} total:${totalFrames} frames`
-              );
-            }
-          }
-        }
-      }
-    };
-
     convertProcess = spawn('ffmpeg', ffmpegArgs);
     convertProcess.stderr.setEncoding('utf8');
     convertProcess.stderr.on('data', function (data) {
-      parseProgressLine(data);
+      const totalFrames = config.fps * config.duration;
+      parseProgressLine(data, totalFrames);
     });
 
-    return new Promise(function (resolve, reject) {
+    return new Promise((resolve, reject) => {
       convertProcess.on('close', function () {
         console.log('FFMPEG compilation process has been completed');
         // Check if file has been created
         if (fs.existsSync(config.output)) resolve(config.output);
         else reject(new Error('File not created'));
       });
+
       convertProcess.on('error', function (err) {
         processError = err;
         reject(err);
       });
+
       convertProcess.stdin.on('error', function (err) {
         processError = err;
         reject(err);
       });
+
       if (config.outputStream) {
         convertProcess.stdout.on('error', function (err) {
           processError = err;
@@ -235,8 +183,8 @@ module.exports = async function (config) {
     };
   }
 
-  let videoOutput;
   try {
+    let videoOutput;
     await timesnap(timesnapConfig);
     if (convertProcess) convertProcess.stdin.end();
     videoOutput = processPromise
